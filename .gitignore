@@ -3,7 +3,7 @@ build/
 immg.sln
 
 immg/immg.vcxproj
-immg/immg.vcxproj.filter
+immg/immg.vcxproj.filters
 immg/immg.vcxproj.user
 
 thirdparty/
