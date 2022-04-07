@@ -4,6 +4,9 @@
 #include <string.h>
 #include <assert.h>
 
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <stb_truetype.h>
+
 #include "imm_math.h"
 
 void *imm_read_entire_file(const char *path, u64 *file_size)
@@ -19,13 +22,24 @@ void *imm_read_entire_file(const char *path, u64 *file_size)
     return buffer;
 }
 
+// TODO: function to bake ttf files into a texture
+static unsigned char temp_bitmap[512*512];
+static stbtt_bakedchar cdata[96]; 
+void imm_load_ttf(const char *path)
+{
+    u64 file_size;
+    void *font_file = imm_read_entire_file(path, &file_size);    
+    s32 error = stbtt_BakeFontBitmap((const unsigned char *)font_file, 0, 64, temp_bitmap, 512, 512, 32, 96, cdata);
+    printf("stb font return %d\n", error);
+}
+
 struct imm_texture_t
 {
     void *pixels;
     u32 width, height;
 };
 
-imm_texture_t imm_load_bmp(const char *path)
+imm_texture_t imm_texture_load_bmp(const char *path)
 {
     u64 file_size;
     void *file = imm_read_entire_file(path, &file_size);
@@ -48,6 +62,15 @@ imm_texture_t imm_load_bmp(const char *path)
     free(file);
 
     return texture;
+}
+
+void imm_texture_free(imm_texture_t *texture)
+{
+    if(texture)
+    {
+        free(texture->pixels);
+        texture->pixels = 0;
+    }
 }
 
 unsigned int imm_load_gl_shader(const char *vertex, const char *fragment)
@@ -112,6 +135,7 @@ unsigned int imm_load_gl_shader(const char *vertex, const char *fragment)
 struct imm_vertex_t
 {
     float x, y;
+    float u, v;
     float r, g, b;
 };
 
@@ -137,10 +161,10 @@ void imm_render_push_rect(s32 x, s32 y, s32 width, s32 height, f32 red, f32 gree
     f32 max_y = (f32)(y + height - 1);
     
     imm_vertex_t r[4];
-    r[0] = {min_x, min_y, red, green, blue};
-    r[1] = {min_x, max_y, red, green, blue};
-    r[2] = {max_x, max_y, red, green, blue};
-    r[3] = {max_x, min_y, red, green, blue};
+    r[0] = {min_x, min_y, 0.0f, 0.0f, red, green, blue};
+    r[1] = {min_x, max_y, 0.0f, 1.0f, red, green, blue};
+    r[2] = {max_x, max_y, 1.0f, 1.0f, red, green, blue};
+    r[3] = {max_x, min_y, 1.0f, 0.0f, red, green, blue};
     memcpy(imm_vertex_buffer + imm_vertex_buffer_count, r, sizeof(r));
     imm_vertex_buffer_count += 4;
     
@@ -189,9 +213,11 @@ int main(int argc, char **argv)
     glBufferData(GL_ARRAY_BUFFER, sizeof(imm_vertex_buffer), (void *)imm_vertex_buffer, GL_DYNAMIC_DRAW);
     // TODO: create offset off macro to make this code more readable and less error prone
     glEnableVertexAttribArray(0); // NOTE: vertex positions
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(imm_vertex_t), (const void *)(sizeof(float)*0));
-    glEnableVertexAttribArray(1); // NOTE: vretex colors
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(imm_vertex_t), (const void *)(sizeof(float)*2));
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(imm_vertex_t), (const void *)(sizeof(float)*0));
+    glEnableVertexAttribArray(1); // NOTE: vertex uv coordinates 
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(imm_vertex_t), (const void *)(sizeof(float)*2));
+    glEnableVertexAttribArray(2); // NOTE: vretex colors
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(imm_vertex_t), (const void *)(sizeof(float)*4));
 
     glCreateBuffers(1, &ibo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
@@ -204,8 +230,24 @@ int main(int argc, char **argv)
     int projection_loc = glGetUniformLocation(shader, "projection");
     glUniformMatrix4fv(projection_loc, 1, GL_TRUE, (const float *)projection.m);
     
-    // TODO: load texture
-    // TODO: bind the texture that each element (only have rects for now) want to use 
+    // NOTE: load font test
+    imm_load_ttf("data/bitstream_vera_sans/Vera.ttf");
+
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    unsigned int texture;
+    imm_texture_t texture_file = imm_texture_load_bmp("data/test.bmp");
+    glCreateTextures(GL_TEXTURE_2D, 1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, 512, 512, 0, GL_RED, GL_UNSIGNED_BYTE, temp_bitmap);
+    //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texture_file.width, texture_file.height, 0, GL_BGRA, GL_UNSIGNED_BYTE, texture_file.pixels);
+    
+    glGenerateMipmap(GL_TEXTURE_2D);
     // TODO: be able to copy array of texture in the GPU
 
     bool running = true;
@@ -223,9 +265,8 @@ int main(int argc, char **argv)
             }
         }
         
-        imm_render_push_rect(100, 100, 200, 200, 1.0f, 0.0f, 0.0f); 
-        imm_render_push_rect(400, 100, 200, 100, 0.0f, 1.0f, 0.0f); 
-        imm_render_push_rect(10, 10, 20, 20, 0.0f, 1.0f, 1.0f); 
+        imm_render_push_rect(590, 200, 256, 256, 0.0f, 1.0f, 0.0f); 
+        imm_render_push_rect(0, 0, 512, 512, 1.0f, 0.0f, 0.0f); 
 
         // TODO: test if glBufferSubData us faster than glMapBuffer
         // NOTE: copy gui buffers into GPU 
@@ -237,7 +278,7 @@ int main(int argc, char **argv)
         memcpy(index_buffer, imm_index_buffer, imm_index_buffer_count * sizeof(u32));
         glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
 
-        glClearColor(0, 0, 1, 1);
+        glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         
         glDrawElements(GL_TRIANGLES, imm_index_buffer_count, GL_UNSIGNED_INT, 0);
@@ -248,6 +289,8 @@ int main(int argc, char **argv)
         imm_index_buffer_count = 0;
         imm_index_offset = 0;
     }
+
+    imm_texture_free(&texture_file);
 
     SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);

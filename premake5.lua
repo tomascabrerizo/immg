@@ -22,7 +22,8 @@ project "immg"
     includedirs
     {
         "%{wks.location}/thirdparty/SDL2-2.0.20/include",
-        "%{wks.location}/thirdparty/glad/include"
+        "%{wks.location}/thirdparty/glad/include",
+        "%{wks.location}/thirdparty/stb/"
     }
     libdirs
     {
