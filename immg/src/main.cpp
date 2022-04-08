@@ -4,10 +4,145 @@
 #include <string.h>
 #include <assert.h>
 
+#include <ft2build.h>
+#include FT_FREETYPE_H 
+
 #define STB_TRUETYPE_IMPLEMENTATION
 #include <stb_truetype.h>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
 
 #include "imm_math.h"
+
+struct imm_character_t
+{
+    unsigned int texture_id;
+    v2 size;
+    v2 baring;
+    int advance;
+};
+
+// NOTE: simple hash table to save the text rendering metrics
+// NOTE: for simplicity is a static hash table and use internal probing
+
+struct imm_character_hash_bucket_t
+{
+    bool used;
+    char glyph;
+    imm_character_t metric;
+};
+
+#define imm_character_hash_size 512
+struct imm_character_hash_t
+{
+    imm_character_hash_bucket_t data[imm_character_hash_size];    
+};
+
+void imm_character_hash_add(imm_character_hash_t *hash, char glyph, imm_character_t metric)
+{
+    u32 index = glyph & (imm_character_hash_size - 1);
+    imm_character_hash_bucket_t *bucket = hash->data + index;
+    while(bucket->used)
+    {
+        index++;
+        assert(index < imm_character_hash_size);
+        bucket = hash->data + index;
+    }
+    bucket->used = true;
+    bucket->glyph = glyph;
+    bucket->metric = metric;
+}
+
+imm_character_t *imm_character_hash_get(imm_character_hash_t *hash, char glyph)
+{
+    u32 index = glyph & (imm_character_hash_size - 1);
+    imm_character_hash_bucket_t *bucket = hash->data + index;
+    if(bucket->used)
+    {
+        while(bucket->glyph != glyph)
+        {
+            index++;
+            assert(index < imm_character_hash_size);
+            bucket = hash->data + index;
+        }
+        return &bucket->metric;
+    }
+    return 0;
+}
+
+static imm_character_hash_t character_hash;
+static char *character_atlas;
+static u32 character_atlas_width;
+static u32 character_atlas_height;
+
+void imm_freetype_test()
+{
+    FT_Library ft;
+    if(FT_Init_FreeType(&ft))
+    {
+        printf("[freetype-error]: could not init free type library\n");
+    }
+    FT_Face face; 
+    if(FT_New_Face(ft, "data/bitstream_vera_sans/Vera.ttf", 0, &face))
+    {
+        printf("[freetype-error]: fail to load font\n");
+    }
+
+    FT_Set_Pixel_Sizes(face, 0, 48);
+    
+    u32 glyph_widht[128];
+    u32 glyph_height[128];
+    s32 glyph_pitch[128];
+    u8 *glyph_data[128];
+    
+    for(u8 c = 'A'; c < 'B'; ++c)
+    {
+        if(FT_Load_Char(face, c, FT_LOAD_RENDER))
+        {
+            printf("[freetype-error]: fail to load glyph %c\n", c);
+            continue;
+        }
+        
+        imm_character_t character =
+        {
+            0,
+            _v2((f32)face->glyph->bitmap.width, (f32)face->glyph->bitmap.rows),
+            _v2((f32)face->glyph->bitmap_left, (f32)face->glyph->bitmap_top),
+            face->glyph->advance.x 
+        };
+        imm_character_hash_add(&character_hash, c, character);
+
+        character_atlas_width += face->glyph->bitmap.width;
+        character_atlas_height = u32_max_2(character_atlas_height, face->glyph->bitmap.rows);
+        glyph_widht[c] = face->glyph->bitmap.width;
+        glyph_height[c] = face->glyph->bitmap.rows;
+        glyph_pitch[c] = face->glyph->bitmap.pitch;
+        glyph_data[c] = face->glyph->bitmap.buffer;
+    }
+    
+    character_atlas = (char *)malloc(character_atlas_width * character_atlas_height);
+    memset(character_atlas, 0, character_atlas_width * character_atlas_height);
+
+    u32 glyph_offset_x = 0;
+    for(u8 c = 'A'; c < 'B'; ++c)
+    {
+        for(u32 y = 0; y < glyph_height[c]; ++y)
+        {
+            for(u32 x = 0; x < glyph_widht[c]; ++x)
+            {
+                character_atlas[y * character_atlas_width + (x + glyph_offset_x)] = glyph_data[c][y * glyph_widht[c] + x];
+            }
+        }
+        glyph_offset_x += glyph_widht[c];
+    } 
+
+    // write the characte atlas to a image for debuggin porpues
+    stbi_write_bmp("character_atlas.bmp", character_atlas_width, character_atlas_height, 1, (void *)character_atlas);
+
+    printf("atlas width %d\n", character_atlas_width);
+    printf("atlas height %d\n", character_atlas_height);
+}
+
 
 void *imm_read_entire_file(const char *path, u64 *file_size)
 {
@@ -29,7 +164,7 @@ void imm_load_ttf(const char *path)
 {
     u64 file_size;
     void *font_file = imm_read_entire_file(path, &file_size);    
-    s32 error = stbtt_BakeFontBitmap((const unsigned char *)font_file, 0, 64, temp_bitmap, 512, 512, 32, 96, cdata);
+    s32 error = stbtt_BakeFontBitmap((const unsigned char *)font_file, 0, 16, temp_bitmap, 512, 512, 32, 96, cdata);
     printf("stb font return %d\n", error);
 }
 
@@ -232,19 +367,20 @@ int main(int argc, char **argv)
     
     // NOTE: load font test
     imm_load_ttf("data/bitstream_vera_sans/Vera.ttf");
-
+    imm_freetype_test();
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
     unsigned int texture;
     imm_texture_t texture_file = imm_texture_load_bmp("data/test.bmp");
     glCreateTextures(GL_TEXTURE_2D, 1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
     
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, 512, 512, 0, GL_RED, GL_UNSIGNED_BYTE, temp_bitmap);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, character_atlas_width, character_atlas_height, 0, GL_RED, GL_UNSIGNED_BYTE, character_atlas);
+    //glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, 512, 512, 0, GL_RED, GL_UNSIGNED_BYTE, temp_bitmap);
     //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texture_file.width, texture_file.height, 0, GL_BGRA, GL_UNSIGNED_BYTE, texture_file.pixels);
     
     glGenerateMipmap(GL_TEXTURE_2D);
@@ -265,8 +401,7 @@ int main(int argc, char **argv)
             }
         }
         
-        imm_render_push_rect(590, 200, 256, 256, 0.0f, 1.0f, 0.0f); 
-        imm_render_push_rect(0, 0, 512, 512, 1.0f, 0.0f, 0.0f); 
+        imm_render_push_rect(100, 100, character_atlas_width, character_atlas_height, 1.0f, 0.0f, 0.0f); 
 
         // TODO: test if glBufferSubData us faster than glMapBuffer
         // NOTE: copy gui buffers into GPU 

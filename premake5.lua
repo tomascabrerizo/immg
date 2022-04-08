@@ -23,16 +23,18 @@ project "immg"
     {
         "%{wks.location}/thirdparty/SDL2-2.0.20/include",
         "%{wks.location}/thirdparty/glad/include",
+        "%{wks.location}/thirdparty/freetype/include",
         "%{wks.location}/thirdparty/stb/"
     }
     libdirs
     {
-        "%{wks.location}/thirdparty/SDL2-2.0.20/lib/x64"
+        "%{wks.location}/thirdparty/SDL2-2.0.20/lib/x64",
+        "%{wks.location}/thirdparty/freetype/release dll/win64"
     }
     
     links
     {
-        "SDL2main", "SDL2"
+        "SDL2main", "SDL2", "freetype"
     }
     
     -- Build cofigurations setup

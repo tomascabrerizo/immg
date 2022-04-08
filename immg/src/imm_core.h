@@ -6,6 +6,16 @@
 
 #define PI (3.14159265359f)
 
+inline u32 u32_min_2(u32 u0, u32 u1)
+{
+    return u0 < u1 ? u0 : u1;
+}
+
+inline u32 u32_max_2(u32 u0, u32 u1)
+{
+    return u0 > u1 ? u0 : u1;
+}
+
 inline f32 f32_infinity()
 {
     f32 result = INFINITY;
