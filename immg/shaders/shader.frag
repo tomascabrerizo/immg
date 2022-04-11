@@ -8,6 +8,5 @@ uniform sampler2D sampler_texture;
 
 void main()
 {
-    vec4 scolor = texture(sampler_texture, vertex_uvs);
-    color = vec4(vec3(scolor.r), 1);
+    color = vec4(1.0, 1.0, 1.0, texture(sampler_texture, vertex_uvs).r);
 }

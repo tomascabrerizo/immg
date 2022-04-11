@@ -7,11 +7,6 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H 
 
-#define STB_TRUETYPE_IMPLEMENTATION
-#include <stb_truetype.h>
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include <stb_image_write.h>
-
 #include "imm_math.h"
 
 struct imm_character_t
@@ -88,21 +83,29 @@ void imm_freetype_test()
         printf("[freetype-error]: fail to load font\n");
     }
 
-    FT_Set_Pixel_Sizes(face, 0, 48);
+    FT_Set_Pixel_Sizes(face, 0, 42);
+
+    const u32 num_char = 128;
+
+    u32 glyph_default_height = (face->size->metrics.height >> 6);
+    u32 max_dim = (1 + glyph_default_height) * (u32)(ceilf(sqrtf(num_char)));
+    u32 atlas_width = 1;
+    while (atlas_width < max_dim) atlas_width <<= 1;
+    u32 atlas_height = atlas_width;
+
+    char *atlas_buffer = (char *)malloc(atlas_width * atlas_height);
+    memset(atlas_buffer, 128, (atlas_width * atlas_height));
     
-    u32 glyph_widht[128];
-    u32 glyph_height[128];
-    s32 glyph_pitch[128];
-    u8 *glyph_data[128];
-    
-    for(u8 c = 'A'; c < 'B'; ++c)
+    u32 atlas_x_offset = 0;
+    u32 atlas_y_offset = 0;
+    for(u8 c = 0; c < num_char; ++c)
     {
         if(FT_Load_Char(face, c, FT_LOAD_RENDER))
         {
             printf("[freetype-error]: fail to load glyph %c\n", c);
             continue;
         }
-        
+
         imm_character_t character =
         {
             0,
@@ -111,36 +114,32 @@ void imm_freetype_test()
             face->glyph->advance.x 
         };
         imm_character_hash_add(&character_hash, c, character);
-
-        character_atlas_width += face->glyph->bitmap.width;
-        character_atlas_height = u32_max_2(character_atlas_height, face->glyph->bitmap.rows);
-        glyph_widht[c] = face->glyph->bitmap.width;
-        glyph_height[c] = face->glyph->bitmap.rows;
-        glyph_pitch[c] = face->glyph->bitmap.pitch;
-        glyph_data[c] = face->glyph->bitmap.buffer;
-    }
-    
-    character_atlas = (char *)malloc(character_atlas_width * character_atlas_height);
-    memset(character_atlas, 0, character_atlas_width * character_atlas_height);
-
-    u32 glyph_offset_x = 0;
-    for(u8 c = 'A'; c < 'B'; ++c)
-    {
-        for(u32 y = 0; y < glyph_height[c]; ++y)
+        
+        u32 glyph_width = face->glyph->bitmap.width;
+        u32 glyph_height = face->glyph->bitmap.rows;
+        s32 glyph_pitch = face->glyph->bitmap.pitch;
+        if((atlas_x_offset + glyph_width) >= atlas_width)
         {
-            for(u32 x = 0; x < glyph_widht[c]; ++x)
+            atlas_x_offset = 0;
+            atlas_y_offset += glyph_default_height; 
+        }
+
+        for(u32 y = 0; y < glyph_height; ++y)
+        {
+            for(u32 x = 0; x < glyph_width; ++x)
             {
-                character_atlas[y * character_atlas_width + (x + glyph_offset_x)] = glyph_data[c][y * glyph_widht[c] + x];
+                atlas_buffer[((y + atlas_y_offset) * atlas_width) + (x + atlas_x_offset)] = face->glyph->bitmap.buffer[y * glyph_pitch + x];
             }
         }
-        glyph_offset_x += glyph_widht[c];
-    } 
+        atlas_x_offset += glyph_width;
+    }
 
-    // write the characte atlas to a image for debuggin porpues
-    stbi_write_bmp("character_atlas.bmp", character_atlas_width, character_atlas_height, 1, (void *)character_atlas);
+    character_atlas_width = atlas_width;
+    character_atlas_height = atlas_height;
+    character_atlas = atlas_buffer;
 
-    printf("atlas width %d\n", character_atlas_width);
-    printf("atlas height %d\n", character_atlas_height);
+    FT_Done_Face(face);
+    FT_Done_FreeType(ft);
 }
 
 
@@ -157,21 +156,11 @@ void *imm_read_entire_file(const char *path, u64 *file_size)
     return buffer;
 }
 
-// TODO: function to bake ttf files into a texture
-static unsigned char temp_bitmap[512*512];
-static stbtt_bakedchar cdata[96]; 
-void imm_load_ttf(const char *path)
-{
-    u64 file_size;
-    void *font_file = imm_read_entire_file(path, &file_size);    
-    s32 error = stbtt_BakeFontBitmap((const unsigned char *)font_file, 0, 16, temp_bitmap, 512, 512, 32, 96, cdata);
-    printf("stb font return %d\n", error);
-}
-
 struct imm_texture_t
 {
     void *pixels;
     u32 width, height;
+    s32 pitch;
 };
 
 imm_texture_t imm_texture_load_bmp(const char *path)
@@ -185,14 +174,14 @@ imm_texture_t imm_texture_load_bmp(const char *path)
     u32 width = *(u32 *)(info_header + 4);
     u32 height = *(u32 *)(info_header + 8);
     u16 bpp = *(u16 *)(info_header + 14);
-    assert(bpp == 32);
     
-    u64 texture_size = width * height * 4;
+    u64 texture_size = width * height * (bpp / 8);
     imm_texture_t texture = {};
     texture.pixels = malloc(texture_size);
     memcpy(texture.pixels, (void *)(header + pixel_offset), texture_size);
     texture.width = width;
     texture.height = height;
+    texture.pitch = width * (bpp / 8);
 
     free(file);
 
@@ -317,8 +306,8 @@ int main(int argc, char **argv)
 {
     SDL_Init(SDL_INIT_EVERYTHING);
 
-    int window_width = 800;
-    int window_height = 600;
+    int window_width = 1024;
+    int window_height = 512;
     SDL_Window *window = SDL_CreateWindow("immg", 
                                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
                                           window_width, window_height, SDL_WINDOW_OPENGL);
@@ -366,8 +355,9 @@ int main(int argc, char **argv)
     glUniformMatrix4fv(projection_loc, 1, GL_TRUE, (const float *)projection.m);
     
     // NOTE: load font test
-    imm_load_ttf("data/bitstream_vera_sans/Vera.ttf");
     imm_freetype_test();
+    
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1); // disable byte-alignment restriction
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
@@ -384,7 +374,9 @@ int main(int argc, char **argv)
     //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texture_file.width, texture_file.height, 0, GL_BGRA, GL_UNSIGNED_BYTE, texture_file.pixels);
     
     glGenerateMipmap(GL_TEXTURE_2D);
-    // TODO: be able to copy array of texture in the GPU
+    
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);  
 
     bool running = true;
     while(running)
@@ -401,7 +393,7 @@ int main(int argc, char **argv)
             }
         }
         
-        imm_render_push_rect(100, 100, character_atlas_width, character_atlas_height, 1.0f, 0.0f, 0.0f); 
+        imm_render_push_rect(0, 0, character_atlas_width, character_atlas_height, 1.0f, 0.0f, 0.0f); 
 
         // TODO: test if glBufferSubData us faster than glMapBuffer
         // NOTE: copy gui buffers into GPU 
