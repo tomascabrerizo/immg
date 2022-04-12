@@ -11,7 +11,8 @@
 
 struct imm_character_t
 {
-    unsigned int texture_id;
+    v2 min_uv;
+    v2 max_uv;
     v2 size;
     v2 baring;
     int advance;
@@ -83,7 +84,7 @@ void imm_freetype_test()
         printf("[freetype-error]: fail to load font\n");
     }
 
-    FT_Set_Pixel_Sizes(face, 0, 42);
+    FT_Set_Pixel_Sizes(face, 0, 24);
 
     const u32 num_char = 128;
 
@@ -94,8 +95,9 @@ void imm_freetype_test()
     u32 atlas_height = atlas_width;
 
     char *atlas_buffer = (char *)malloc(atlas_width * atlas_height);
-    memset(atlas_buffer, 128, (atlas_width * atlas_height));
+    memset(atlas_buffer, 0, (atlas_width * atlas_height));
     
+    u32 padding = 4;
     u32 atlas_x_offset = 0;
     u32 atlas_y_offset = 0;
     for(u8 c = 0; c < num_char; ++c)
@@ -106,14 +108,6 @@ void imm_freetype_test()
             continue;
         }
 
-        imm_character_t character =
-        {
-            0,
-            _v2((f32)face->glyph->bitmap.width, (f32)face->glyph->bitmap.rows),
-            _v2((f32)face->glyph->bitmap_left, (f32)face->glyph->bitmap_top),
-            face->glyph->advance.x 
-        };
-        imm_character_hash_add(&character_hash, c, character);
         
         u32 glyph_width = face->glyph->bitmap.width;
         u32 glyph_height = face->glyph->bitmap.rows;
@@ -121,7 +115,7 @@ void imm_freetype_test()
         if((atlas_x_offset + glyph_width) >= atlas_width)
         {
             atlas_x_offset = 0;
-            atlas_y_offset += glyph_default_height; 
+            atlas_y_offset += glyph_default_height + padding; 
         }
 
         for(u32 y = 0; y < glyph_height; ++y)
@@ -131,7 +125,24 @@ void imm_freetype_test()
                 atlas_buffer[((y + atlas_y_offset) * atlas_width) + (x + atlas_x_offset)] = face->glyph->bitmap.buffer[y * glyph_pitch + x];
             }
         }
-        atlas_x_offset += glyph_width;
+        
+        f32 u_0 = ((f32)atlas_x_offset / (f32)atlas_width);
+        f32 v_0 = ((f32)atlas_y_offset / (f32)atlas_height);
+        f32 u_1 = ((f32)(atlas_x_offset + glyph_width) / (f32)atlas_width);
+        f32 v_1 = ((f32)(atlas_y_offset + glyph_height) / (f32)atlas_height);
+
+        imm_character_t character =
+        {
+            _v2(u_0, v_0), // NOTE: texture_coord_0
+            _v2(u_1, v_1), // NOTE: texture_coord_1
+            _v2((f32)glyph_width, (f32)glyph_height),
+            _v2((f32)face->glyph->bitmap_left, (f32)face->glyph->bitmap_top),
+            face->glyph->advance.x 
+        };
+        imm_character_hash_add(&character_hash, c, character);
+
+
+        atlas_x_offset += glyph_width + padding;
     }
 
     character_atlas_width = atlas_width;
@@ -268,27 +279,27 @@ struct imm_vertex_t
 
 #define imm_index_offset(a) (imm_index_offset + (a))
 
-static imm_vertex_t imm_vertex_buffer[256];
-static u32 imm_vertex_buffer_size = 256;
+static imm_vertex_t imm_vertex_buffer[1024];
+static u32 imm_vertex_buffer_size = 1024;
 static u32 imm_vertex_buffer_count = 0;
 
-static u32 imm_index_buffer[256];
-static u32 imm_index_buffer_size = 256;
+static u32 imm_index_buffer[1024];
+static u32 imm_index_buffer_size = 1024;
 static u32 imm_index_buffer_count = 0;
 static u32 imm_index_offset = 0;
 
-void imm_render_push_rect(s32 x, s32 y, s32 width, s32 height, f32 red, f32 green, f32 blue)
+void imm_render_push_rect_raw(v2 pos, v2 dim, v3 color, v2 min_uv, v2 max_uv)
 {
-    f32 min_x = (f32)x;
-    f32 min_y = (f32)y;
-    f32 max_x = (f32)(x + width  - 1);
-    f32 max_y = (f32)(y + height - 1);
+    f32 min_x = pos.x;
+    f32 min_y = pos.y;
+    f32 max_x = (pos.x + dim.x - 1);
+    f32 max_y = (pos.y + dim.y- 1);
     
     imm_vertex_t r[4];
-    r[0] = {min_x, min_y, 0.0f, 0.0f, red, green, blue};
-    r[1] = {min_x, max_y, 0.0f, 1.0f, red, green, blue};
-    r[2] = {max_x, max_y, 1.0f, 1.0f, red, green, blue};
-    r[3] = {max_x, min_y, 1.0f, 0.0f, red, green, blue};
+    r[0] = {min_x, min_y, min_uv.x, min_uv.y, color.x, color.y, color.z};
+    r[1] = {min_x, max_y, min_uv.x, max_uv.y, color.x, color.y, color.z};
+    r[2] = {max_x, max_y, max_uv.x, max_uv.y, color.x, color.y, color.z};
+    r[3] = {max_x, min_y, max_uv.x, min_uv.y, color.x, color.y, color.z};
     memcpy(imm_vertex_buffer + imm_vertex_buffer_count, r, sizeof(r));
     imm_vertex_buffer_count += 4;
     
@@ -300,6 +311,28 @@ void imm_render_push_rect(s32 x, s32 y, s32 width, s32 height, f32 red, f32 gree
     memcpy(imm_index_buffer + imm_index_buffer_count, i, sizeof(i));
     imm_index_buffer_count += 6;
     imm_index_offset += 4;
+}
+
+void imm_render_push_text_rect(s32 x, s32 y, char *text, f32 scale)
+{
+    f32 base = imm_character_hash_get(&character_hash, '0')->baring.y;
+    for(char *c = text; *c != '\0'; ++c)
+    {
+        imm_character_t *character = imm_character_hash_get(&character_hash, *c);
+        
+        v2 position = {};
+        position.x = x + character->baring.x * scale;
+        position.y = y + (base - character->baring.y) * scale;
+
+        imm_render_push_rect_raw(position, character->size * scale, _v3(0, 0, 0), character->min_uv, character->max_uv);
+
+        x += (u32)((character->advance >> 6) * scale);
+    }
+}
+
+void imm_render_push_rect(s32 x, s32 y, s32 width, s32 height, f32 red, f32 green, f32 blue)
+{
+    imm_render_push_rect_raw(_v2((f32)x, (f32)y), _v2((f32)width, (f32)height), _v3((f32)red, (f32)green, (f32)blue), _v2(0, 0), _v2(0, 0));
 }
 
 int main(int argc, char **argv)
@@ -362,7 +395,7 @@ int main(int argc, char **argv)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST_MIPMAP_LINEAR);
 
     unsigned int texture;
     imm_texture_t texture_file = imm_texture_load_bmp("data/test.bmp");
@@ -393,7 +426,9 @@ int main(int argc, char **argv)
             }
         }
         
-        imm_render_push_rect(0, 0, character_atlas_width, character_atlas_height, 1.0f, 0.0f, 0.0f); 
+        imm_render_push_text_rect(100, 0, "Hellow, World!", 1.0f); 
+        imm_render_push_text_rect(10, 100, "Donec nec justo eget felis facilisis fermentum. Aliquam porttitor mauris sit amet orci. Aenean dignissim pellentesque felis.", 1.0f); 
+        imm_render_push_text_rect(20, 200, "Tomas Cabrerizo!", .6f); 
 
         // TODO: test if glBufferSubData us faster than glMapBuffer
         // NOTE: copy gui buffers into GPU 
