@@ -7,6 +7,9 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H 
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
 #include "imm_math.h"
 
 struct imm_character_t
@@ -66,12 +69,27 @@ imm_character_t *imm_character_hash_get(imm_character_hash_t *hash, char glyph)
     return 0;
 }
 
-static imm_character_hash_t character_hash;
-static char *character_atlas;
-static u32 character_atlas_width;
-static u32 character_atlas_height;
+struct imm_character_atlas_t
+{
+    unsigned int texture_id;
+    imm_character_hash_t hash;
+    char *buffer;
+    u32 width;
+    u32 height;
+    u32 font_size;
+};
 
-void imm_freetype_test()
+enum imm_character_atlas_type_t
+{
+    character_atlas_type_small,
+    character_atlas_type_large,
+    
+    character_atlas_type_count,
+};
+
+static imm_character_atlas_t character_atlas[character_atlas_type_count];
+
+void imm_character_atlas_init(imm_character_atlas_t *atlas, const char *path, u32 width, u32 height, u32 font_size, u32 padding)
 {
     FT_Library ft;
     if(FT_Init_FreeType(&ft))
@@ -79,28 +97,23 @@ void imm_freetype_test()
         printf("[freetype-error]: could not init free type library\n");
     }
     FT_Face face; 
-    if(FT_New_Face(ft, "data/bitstream_vera_sans/Vera.ttf", 0, &face))
+    if(FT_New_Face(ft, path, 0, &face))
     {
         printf("[freetype-error]: fail to load font\n");
     }
 
-    FT_Set_Pixel_Sizes(face, 0, 24);
+    FT_Set_Pixel_Sizes(face, 0, font_size);
 
-    const u32 num_char = 128;
-
-    u32 glyph_default_height = (face->size->metrics.height >> 6);
-    u32 max_dim = (1 + glyph_default_height) * (u32)(ceilf(sqrtf(num_char)));
-    u32 atlas_width = 1;
-    while (atlas_width < max_dim) atlas_width <<= 1;
-    u32 atlas_height = atlas_width;
+    u32 atlas_height = height; 
+    u32 atlas_width = width;
 
     char *atlas_buffer = (char *)malloc(atlas_width * atlas_height);
     memset(atlas_buffer, 0, (atlas_width * atlas_height));
     
-    u32 padding = 4;
-    u32 atlas_x_offset = 0;
-    u32 atlas_y_offset = 0;
-    for(u8 c = 0; c < num_char; ++c)
+    u32 atlas_x_offset = padding;
+    u32 atlas_y_offset = padding;
+    
+    for(u8 c = ' '; c < 128; ++c)
     {
         if(FT_Load_Char(face, c, FT_LOAD_RENDER))
         {
@@ -108,28 +121,37 @@ void imm_freetype_test()
             continue;
         }
 
-        
         u32 glyph_width = face->glyph->bitmap.width;
         u32 glyph_height = face->glyph->bitmap.rows;
         s32 glyph_pitch = face->glyph->bitmap.pitch;
+        
         if((atlas_x_offset + glyph_width) >= atlas_width)
         {
-            atlas_x_offset = 0;
-            atlas_y_offset += glyph_default_height + padding; 
+            atlas_x_offset = padding;
+            atlas_y_offset += font_size + padding; 
         }
 
         for(u32 y = 0; y < glyph_height; ++y)
         {
             for(u32 x = 0; x < glyph_width; ++x)
             {
-                atlas_buffer[((y + atlas_y_offset) * atlas_width) + (x + atlas_x_offset)] = face->glyph->bitmap.buffer[y * glyph_pitch + x];
+                u32 y_pos = y + atlas_y_offset;
+                u32 x_pos = x + atlas_x_offset;
+                // NOTE: Clipping the atlas to the width and height
+                // TODO: this can be optimize, now is really slow
+                if((y_pos < atlas_height) && (x_pos < atlas_width))
+                {
+                    atlas_buffer[(y_pos * atlas_width) + x_pos] = face->glyph->bitmap.buffer[y * glyph_pitch + x];
+                }
             }
         }
         
-        f32 u_0 = ((f32)atlas_x_offset / (f32)atlas_width);
-        f32 v_0 = ((f32)atlas_y_offset / (f32)atlas_height);
+        f32 u_0 = ((f32)(atlas_x_offset) / (f32)atlas_width);
+        f32 v_0 = ((f32)(atlas_y_offset) / (f32)atlas_height);
         f32 u_1 = ((f32)(atlas_x_offset + glyph_width) / (f32)atlas_width);
         f32 v_1 = ((f32)(atlas_y_offset + glyph_height) / (f32)atlas_height);
+
+        atlas_x_offset += glyph_width + padding;
 
         imm_character_t character =
         {
@@ -139,20 +161,50 @@ void imm_freetype_test()
             _v2((f32)face->glyph->bitmap_left, (f32)face->glyph->bitmap_top),
             face->glyph->advance.x 
         };
-        imm_character_hash_add(&character_hash, c, character);
-
-
-        atlas_x_offset += glyph_width + padding;
+        imm_character_hash_add(&atlas->hash, c, character);
+        atlas->width = atlas_width;
+        atlas->height = atlas_height;
+        atlas->buffer = atlas_buffer;
+        atlas->font_size = font_size;
     }
-
-    character_atlas_width = atlas_width;
-    character_atlas_height = atlas_height;
-    character_atlas = atlas_buffer;
 
     FT_Done_Face(face);
     FT_Done_FreeType(ft);
 }
 
+void imm_character_atlas_init_types()
+{
+    imm_character_atlas_init(&character_atlas[character_atlas_type_small], "data/bitstream_vera_sans/Vera.ttf", 256, 256, 16, 4);
+    imm_character_atlas_init(&character_atlas[character_atlas_type_large], "data/bitstream_vera_sans/Vera.ttf", 256, 256, 24, 4);
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1); // disable byte-alignment restriction
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+
+    glCreateTextures(GL_TEXTURE_2D, 1, &character_atlas[character_atlas_type_small].texture_id);
+    glBindTexture(GL_TEXTURE_2D, character_atlas[character_atlas_type_small].texture_id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, character_atlas[character_atlas_type_small].width, character_atlas[character_atlas_type_small].height, 0, GL_RED, GL_UNSIGNED_BYTE, character_atlas[character_atlas_type_small].buffer);
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    glCreateTextures(GL_TEXTURE_2D, 1, &character_atlas[character_atlas_type_large].texture_id);
+    glBindTexture(GL_TEXTURE_2D, character_atlas[character_atlas_type_large].texture_id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, character_atlas[character_atlas_type_large].width, character_atlas[character_atlas_type_large].height, 0, GL_RED, GL_UNSIGNED_BYTE, character_atlas[character_atlas_type_large].buffer);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);  
+}
+
+void imm_character_atlas_write_to_disk(imm_character_atlas_t *atlas, const char *path)
+{
+    if(atlas)
+    {
+        stbi_write_bmp(path, atlas->width, atlas->height, 1, (void *)atlas->buffer);
+    }
+}
 
 void *imm_read_entire_file(const char *path, u64 *file_size)
 {
@@ -292,8 +344,8 @@ void imm_render_push_rect_raw(v2 pos, v2 dim, v3 color, v2 min_uv, v2 max_uv)
 {
     f32 min_x = pos.x;
     f32 min_y = pos.y;
-    f32 max_x = (pos.x + dim.x - 1);
-    f32 max_y = (pos.y + dim.y- 1);
+    f32 max_x = (pos.x + dim.x);
+    f32 max_y = (pos.y + dim.y);
     
     imm_vertex_t r[4];
     r[0] = {min_x, min_y, min_uv.x, min_uv.y, color.x, color.y, color.z};
@@ -313,20 +365,22 @@ void imm_render_push_rect_raw(v2 pos, v2 dim, v3 color, v2 min_uv, v2 max_uv)
     imm_index_offset += 4;
 }
 
-void imm_render_push_text_rect(s32 x, s32 y, char *text, f32 scale)
+void imm_render_push_text_rect(s32 x, s32 y, char *text, imm_character_atlas_type_t type)
 {
-    f32 base = imm_character_hash_get(&character_hash, '0')->baring.y;
+    glBindTexture(GL_TEXTURE_2D, character_atlas[type].texture_id);
+
+    u32 base = character_atlas[type].font_size;
     for(char *c = text; *c != '\0'; ++c)
     {
-        imm_character_t *character = imm_character_hash_get(&character_hash, *c);
+        imm_character_t *character = imm_character_hash_get(&character_atlas[type].hash, *c);
         
         v2 position = {};
-        position.x = x + character->baring.x * scale;
-        position.y = y + (base - character->baring.y) * scale;
+        position.x = x + character->baring.x;
+        position.y = y + (base - character->baring.y);
 
-        imm_render_push_rect_raw(position, character->size * scale, _v3(0, 0, 0), character->min_uv, character->max_uv);
+        imm_render_push_rect_raw(position, character->size, _v3(0, 0, 0), character->min_uv, character->max_uv);
 
-        x += (u32)((character->advance >> 6) * scale);
+        x += (u32)((character->advance >> 6));
     }
 }
 
@@ -388,28 +442,9 @@ int main(int argc, char **argv)
     glUniformMatrix4fv(projection_loc, 1, GL_TRUE, (const float *)projection.m);
     
     // NOTE: load font test
-    imm_freetype_test();
-    
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1); // disable byte-alignment restriction
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST_MIPMAP_LINEAR);
-
-    unsigned int texture;
-    imm_texture_t texture_file = imm_texture_load_bmp("data/test.bmp");
-    glCreateTextures(GL_TEXTURE_2D, 1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, character_atlas_width, character_atlas_height, 0, GL_RED, GL_UNSIGNED_BYTE, character_atlas);
-    //glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, 512, 512, 0, GL_RED, GL_UNSIGNED_BYTE, temp_bitmap);
-    //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texture_file.width, texture_file.height, 0, GL_BGRA, GL_UNSIGNED_BYTE, texture_file.pixels);
-    
-    glGenerateMipmap(GL_TEXTURE_2D);
-    
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);  
+    imm_character_atlas_init_types();
+    imm_character_atlas_write_to_disk(&character_atlas[character_atlas_type_small], "data/character_atlas_small.bmp");
+    imm_character_atlas_write_to_disk(&character_atlas[character_atlas_type_large], "data/character_atlas_large.bmp");
 
     bool running = true;
     while(running)
@@ -426,9 +461,9 @@ int main(int argc, char **argv)
             }
         }
         
-        imm_render_push_text_rect(100, 0, "Hellow, World!", 1.0f); 
-        imm_render_push_text_rect(10, 100, "Donec nec justo eget felis facilisis fermentum. Aliquam porttitor mauris sit amet orci. Aenean dignissim pellentesque felis.", 1.0f); 
-        imm_render_push_text_rect(20, 200, "Tomas Cabrerizo!", .6f); 
+        imm_render_push_text_rect(20, 100, "Tomas Cabrerizo!", character_atlas_type_large); 
+        imm_render_push_text_rect(20, 200, "Gonzalo Cabrerizo!", character_atlas_type_large); 
+        imm_render_push_text_rect(20, 250, "Manuel Cabrerizo!", character_atlas_type_large); 
 
         // TODO: test if glBufferSubData us faster than glMapBuffer
         // NOTE: copy gui buffers into GPU 
@@ -451,8 +486,6 @@ int main(int argc, char **argv)
         imm_index_buffer_count = 0;
         imm_index_offset = 0;
     }
-
-    imm_texture_free(&texture_file);
 
     SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);
